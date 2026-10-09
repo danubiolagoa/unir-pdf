@@ -3,6 +3,12 @@
 Aplicativo simples para unir vários arquivos PDF em um só, escolhendo a ordem e o nome do arquivo final.
 Roda inteiramente no navegador: **os arquivos nunca saem do seu computador**.
 
+## Acesse online
+
+👉 **https://danubiolagoa.github.io/unir-pdf/**
+
+Nada para instalar: abra o link e use direto no navegador.
+
 ## Recursos
 
 - Adicione quantos PDFs quiser (arrastar e soltar ou clicar para escolher)
