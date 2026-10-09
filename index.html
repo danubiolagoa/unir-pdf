@@ -1,0 +1,234 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Unir PDF</title>
+<style>
+  :root { --bg:#f5f6fa; --card:#fff; --txt:#1f2430; --mut:#6b7280; --pri:#2563eb; --pri2:#1d4ed8; --bd:#d9dde6; --dng:#dc2626; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#14161c; --card:#1e2128; --txt:#e8eaf0; --mut:#9aa1b0; --bd:#343944; --pri:#3b82f6; --pri2:#60a5fa; }
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--txt); font:16px/1.4 system-ui,Segoe UI,sans-serif; }
+  main { max-width:760px; margin:0 auto; padding:24px 16px 48px; }
+  h1 { margin:0 0 4px; font-size:1.6rem; }
+  p.sub { margin:0 0 20px; color:var(--mut); }
+  #drop { border:2px dashed var(--bd); border-radius:14px; padding:32px 16px; text-align:center; background:var(--card); cursor:pointer; transition:.15s; }
+  #drop.over, #drop:hover { border-color:var(--pri); background:color-mix(in srgb,var(--pri) 8%,var(--card)); }
+  #drop strong { color:var(--pri); }
+  ul { list-style:none; margin:20px 0 0; padding:0; display:flex; flex-direction:column; gap:8px; }
+  li { display:flex; align-items:center; gap:12px; background:var(--card); border:1px solid var(--bd); border-radius:10px; padding:10px 12px; }
+  li.dragging { opacity:.4; }
+  li.target { border-color:var(--pri); box-shadow:0 0 0 2px color-mix(in srgb,var(--pri) 30%,transparent); }
+  .grip { cursor:grab; color:var(--mut); font-size:20px; user-select:none; }
+  .num { width:28px; height:28px; border-radius:50%; background:var(--pri); color:#fff; display:grid; place-items:center; font-size:.85rem; flex:none; }
+  .info { flex:1; min-width:0; }
+  .name { font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .meta { color:var(--mut); font-size:.85rem; }
+  button { font:inherit; border:1px solid var(--bd); background:var(--card); color:var(--txt); border-radius:8px; padding:6px 10px; cursor:pointer; }
+  button:hover:not(:disabled) { border-color:var(--pri); }
+  button:disabled { opacity:.35; cursor:default; }
+  button.del:hover:not(:disabled) { border-color:var(--dng); color:var(--dng); }
+  .acts { display:flex; gap:4px; flex:none; }
+  .bar { display:flex; gap:10px; align-items:center; margin-top:20px; flex-wrap:wrap; }
+  .bar .total { color:var(--mut); flex:1; }
+  #merge { background:var(--pri); border-color:var(--pri); color:#fff; padding:10px 22px; font-weight:600; }
+  #merge:hover:not(:disabled) { background:var(--pri2); border-color:var(--pri2); }
+  #msg { margin-top:14px; min-height:1.4em; }
+  #msg.err { color:var(--dng); }
+  .namebox { margin-top:20px; }
+  .namebox label { display:block; font-weight:600; margin-bottom:6px; }
+  .namerow { display:flex; align-items:center; gap:6px; }
+  .namerow input { flex:1; font:inherit; padding:9px 12px; border:1px solid var(--bd); border-radius:8px; background:var(--card); color:var(--txt); }
+  .namerow input:focus { outline:2px solid var(--pri); border-color:var(--pri); }
+  .namerow span { color:var(--mut); }
+  .sugs { display:flex; flex-wrap:wrap; gap:6px; margin-top:8px; }
+  .sugs button { font-size:.85rem; border-radius:999px; padding:3px 12px; color:var(--pri); }
+  .empty { text-align:center; color:var(--mut); margin-top:20px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Unir PDF</h1>
+  <p class="sub">Adicione quantos PDFs quiser, defina a ordem e una. Tamanho e orientação de cada página são mantidos. Tudo roda no seu computador.</p>
+
+  <div id="drop" tabindex="0">Arraste os PDFs aqui ou <strong>clique para escolher</strong></div>
+  <input id="file" type="file" accept="application/pdf,.pdf" multiple hidden>
+
+  <ul id="list"></ul>
+  <p class="empty" id="empty">Nenhum arquivo adicionado.</p>
+
+  <div class="namebox">
+    <label for="outname">Nome do arquivo final</label>
+    <div class="namerow"><input id="outname" type="text" placeholder="unido" autocomplete="off"><span>.pdf</span></div>
+    <div class="sugs" id="sugs"></div>
+  </div>
+
+  <div class="bar">
+    <button id="sort">Ordenar A–Z</button>
+    <button id="clear">Limpar tudo</button>
+    <span class="total" id="total"></span>
+    <button id="merge" disabled>Unir PDFs</button>
+  </div>
+  <div id="msg" role="status"></div>
+</main>
+
+<script src="pdf-lib.min.js"></script>
+<script>
+const { PDFDocument } = PDFLib;
+let items = [];            // {id, file, pages, info}
+let nextId = 1, dragId = null;
+
+const $ = s => document.querySelector(s);
+const list = $('#list'), msg = $('#msg');
+
+const fmtSize = b => b > 1048576 ? (b/1048576).toFixed(1)+' MB' : Math.max(1,Math.round(b/1024))+' KB';
+
+function pageDesc(page) {
+  const r = page.getRotation().angle % 180 !== 0;
+  let { width:w, height:h } = page.getSize();
+  if (r) [w,h] = [h,w];
+  const mm = [w*25.4/72, h*25.4/72].sort((a,b)=>a-b);
+  const near = (a,b)=>Math.abs(a-b)<4;
+  let fmt = '';
+  if (near(mm[0],210)&&near(mm[1],297)) fmt='A4';
+  else if (near(mm[0],297)&&near(mm[1],420)) fmt='A3';
+  else if (near(mm[0],148)&&near(mm[1],210)) fmt='A5';
+  else if (near(mm[0],216)&&near(mm[1],279)) fmt='Carta';
+  else fmt = `${Math.round(w)}×${Math.round(h)} pt`;
+  return fmt + (w > h ? ' · paisagem' : ' · retrato');
+}
+
+async function addFiles(files) {
+  msg.className=''; msg.textContent='';
+  for (const f of files) {
+    if (!/\.pdf$/i.test(f.name) && f.type !== 'application/pdf') continue;
+    try {
+      const doc = await PDFDocument.load(await f.arrayBuffer(), { ignoreEncryption:true });
+      const n = doc.getPageCount();
+      items.push({ id:nextId++, file:f, pages:n, info:n ? pageDesc(doc.getPage(0)) : '' });
+    } catch (e) {
+      msg.className='err';
+      msg.textContent = `Não foi possível ler "${f.name}" (arquivo inválido ou protegido).`;
+    }
+  }
+  render();
+}
+
+function render() {
+  list.innerHTML = '';
+  items.forEach((it, i) => {
+    const li = document.createElement('li');
+    li.draggable = true; li.dataset.id = it.id;
+    li.innerHTML = `
+      <span class="grip" title="Arraste para reordenar">⋮⋮</span>
+      <span class="num">${i+1}</span>
+      <div class="info"><div class="name"></div>
+        <div class="meta">${it.pages} pág. · ${fmtSize(it.file.size)} · 1ª pág.: ${it.info}</div></div>
+      <div class="acts">
+        <button data-a="up" title="Subir" ${i===0?'disabled':''}>↑</button>
+        <button data-a="down" title="Descer" ${i===items.length-1?'disabled':''}>↓</button>
+        <button data-a="del" class="del" title="Remover">✕</button>
+      </div>`;
+    li.querySelector('.name').textContent = it.file.name;
+    li.addEventListener('dragstart', e => { dragId = it.id; li.classList.add('dragging'); e.dataTransfer.effectAllowed='move'; e.dataTransfer.setData('text/plain',''); });
+    li.addEventListener('dragend', () => { dragId = null; render(); });
+    li.addEventListener('dragover', e => { if (dragId===null) return; e.preventDefault(); li.classList.add('target'); });
+    li.addEventListener('dragleave', () => li.classList.remove('target'));
+    li.addEventListener('drop', e => {
+      if (dragId===null) return;
+      e.preventDefault(); e.stopPropagation();
+      const from = items.findIndex(x=>x.id===dragId), to = i;
+      const [m] = items.splice(from,1); items.splice(to,0,m);
+      dragId = null; render();
+    });
+    list.appendChild(li);
+  });
+  const total = items.reduce((s,x)=>s+x.pages,0);
+  $('#total').textContent = items.length ? `${items.length} arquivo(s) · ${total} páginas` : '';
+  $('#empty').hidden = items.length > 0;
+  $('#merge').disabled = items.length < 2;
+  $('#sort').disabled = $('#clear').disabled = items.length === 0;
+  updateSuggestions();
+}
+
+// ---- Nome do arquivo de saída ----
+const outname = $('#outname');
+let nameEdited = false;   // true se o usuário digitou/escolheu um nome
+
+const baseName = n => n.replace(/\.pdf$/i, '');
+const clean = s => s.replace(/[\\/:*?"<>|]+/g, '').replace(/[\s_\-.]+$/g, '').trim();
+
+function suggestNames() {
+  if (!items.length) return [];
+  const names = items.map(i => baseName(i.file.name));
+  const out = [];
+  // prefixo comum (ex.: "Contrato_parte1", "Contrato_parte2" -> "Contrato")
+  let p = names[0];
+  for (const n of names) while (p && !n.toLowerCase().startsWith(p.toLowerCase())) p = p.slice(0,-1);
+  p = clean(p);
+  if (items.length > 1 && p.length >= 3) out.push(p + '_unido');
+  out.push(clean(names[0]) + (items.length > 1 ? '_unido' : ''));
+  if (items.length > 1) out.push(clean(names[0]) + '_e_' + (items.length-1) + '_outros');
+  const d = new Date(), pad = n => String(n).padStart(2,'0');
+  out.push(`unido_${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`);
+  return [...new Set(out.filter(Boolean))];
+}
+
+function updateSuggestions() {
+  const sugs = suggestNames();
+  if (!nameEdited) outname.value = sugs[0] || '';
+  const box = $('#sugs'); box.innerHTML = '';
+  sugs.forEach(s => {
+    const b = document.createElement('button'); b.type='button'; b.textContent = s;
+    b.onclick = () => { outname.value = s; nameEdited = true; };
+    box.appendChild(b);
+  });
+}
+outname.addEventListener('input', () => { nameEdited = outname.value.trim() !== ''; if (!nameEdited) updateSuggestions(); });
+
+list.addEventListener('click', e => {
+  const b = e.target.closest('button'); if (!b) return;
+  const i = items.findIndex(x => x.id == b.closest('li').dataset.id);
+  if (b.dataset.a==='del') items.splice(i,1);
+  else { const j = i + (b.dataset.a==='up'?-1:1); [items[i],items[j]]=[items[j],items[i]]; }
+  render();
+});
+
+const drop = $('#drop'), input = $('#file');
+drop.onclick = () => input.click();
+drop.onkeydown = e => { if (e.key==='Enter'||e.key===' ') input.click(); };
+input.onchange = () => { addFiles([...input.files]); input.value=''; };
+['dragenter','dragover'].forEach(ev => window.addEventListener(ev, e => { if (dragId===null) { e.preventDefault(); drop.classList.add('over'); } }));
+['dragleave','drop'].forEach(ev => window.addEventListener(ev, e => { if (e.target===document.documentElement || ev==='drop') drop.classList.remove('over'); }));
+window.addEventListener('drop', e => { if (dragId===null) { e.preventDefault(); addFiles([...e.dataTransfer.files]); } });
+
+$('#sort').onclick = () => { items.sort((a,b)=>a.file.name.localeCompare(b.file.name,'pt-BR',{numeric:true})); render(); };
+$('#clear').onclick = () => { items = []; nameEdited = false; msg.textContent=''; render(); };
+
+$('#merge').onclick = async () => {
+  const btn = $('#merge'); btn.disabled = true; msg.className=''; msg.textContent='Unindo...';
+  try {
+    const out = await PDFDocument.create();
+    for (const it of items) {
+      const src = await PDFDocument.load(await it.file.arrayBuffer(), { ignoreEncryption:true });
+      const pages = await out.copyPages(src, src.getPageIndices()); // mantém tamanho, rotação e conteúdo
+      pages.forEach(p => out.addPage(p));
+    }
+    const blob = new Blob([await out.save()], { type:'application/pdf' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob); const fname = (clean(outname.value) || 'unido') + '.pdf';
+    a.download = fname; a.click();
+    setTimeout(()=>URL.revokeObjectURL(a.href), 5000);
+    msg.textContent = `Pronto! "${fname}" com ${out.getPageCount()} páginas foi baixado.`;
+  } catch (e) {
+    msg.className='err'; msg.textContent = 'Erro ao unir: ' + e.message;
+  }
+  btn.disabled = items.length < 2;
+};
+
+render();
+</script>
+</body>
+</html>
